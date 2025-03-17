@@ -136,6 +136,9 @@ ENV/
 env.bak/
 venv.bak/
 
+.chainlit/
+.chainlit/*
+
 # Spyder project settings
 .spyderproject
 .spyproject

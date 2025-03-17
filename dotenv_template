@@ -1,4 +1,4 @@
-# environment variable for the API Keys
+# environment variable for the API Keys ( .env file )
 OPENAI_API_KEY
 GEMINI_API_KEY
 ANTHROPIC_API_KEY

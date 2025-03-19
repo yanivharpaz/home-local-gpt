@@ -70,6 +70,14 @@ def parse_agent_message(text: str) -> Dict:
 async def query_agent(role: str, prompt: str, project_context: Dict) -> Dict:
     """Query an agent with a specific role."""
     # Construct the system message based on the agent's role
+    
+    # Process reference materials if available
+    reference_materials_text = ""
+    if "reference_materials" in project_context and project_context["reference_materials"]:
+        reference_materials_text = "Reference materials:\n\n"
+        for material in project_context["reference_materials"]:
+            reference_materials_text += f"===== {material['filename']} =====\n{material['content']}\n\n"
+    
     system_message = f"""You are the {AGENT_ROLES[role]['name']} ({AGENT_ROLES[role]['emoji']}) on a creative project team.
     
 Your responsibility is: {AGENT_ROLES[role]['description']}
@@ -85,7 +93,9 @@ Always respond in JSON format with the following structure:
 Current project context:
 {json.dumps(project_context, indent=2)}
 
-Be creative, specific, and constructive in your response.
+{reference_materials_text}
+
+Be creative, specific, and constructive in your response. If reference materials were provided, use them for inspiration and to match the style and tone.
 """
 
     try:
@@ -149,6 +159,13 @@ async def synthesize_responses(results: List[Dict], project_context: Dict) -> Di
         for r in results
     ])
     
+    # Process reference materials if available
+    reference_materials_text = ""
+    if "reference_materials" in project_context and project_context["reference_materials"]:
+        reference_materials_text = "Reference materials for style and tone guidance:\n\n"
+        for material in project_context["reference_materials"]:
+            reference_materials_text += f"===== {material['filename']} =====\n{material['content']}\n\n"
+    
     # Ask the Creative Director to synthesize
     system_message = f"""You are the Creative Director synthesizing the team's ideas into a cohesive plan.
 
@@ -160,7 +177,11 @@ Current project context:
 Team responses:
 {agent_responses}
 
+{reference_materials_text}
+
 Provide a synthesized perspective that incorporates the best ideas from each team member.
+If reference materials were provided, make sure the creative direction matches their style and tone.
+
 Respond in JSON format with the following structure:
 ```json
 {{
@@ -246,6 +267,61 @@ Respond in JSON format with the following structure:
             "next_steps": "Please try again."
         }
 
+# File upload handling function
+async def handle_file_upload():
+    """Process uploaded files as reference material for the creative project."""
+    try:
+        files = await cl.AskFileMessage(
+            content="You can upload files like templates or reference material to help guide the creative process.",
+            accept=["text/plain", ".txt", ".md"],
+            max_size_mb=10,
+            timeout=180,
+        ).send()
+        
+        if files and len(files) > 0:
+            file_contents = []
+            
+            for file in files:
+                try:
+                    with open(file.path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    
+                    file_contents.append({
+                        "filename": file.name,
+                        "content": content
+                    })
+                    
+                    await cl.Message(content=f"Processed file: `{file.name}`").send()
+                except Exception as e:
+                    await cl.Message(content=f"Error reading file `{file.name}`: {str(e)}").send()
+            
+            if file_contents:
+                # Update project context with file contents
+                current_project["reference_materials"] = file_contents
+                
+                # Create a summary message of uploaded materials
+                summary = "\n\n".join([
+                    f"**{item['filename']}**\n```\n{item['content'][:500]}{'...' if len(item['content']) > 500 else ''}\n```"
+                    for item in file_contents
+                ])
+                
+                await cl.Message(
+                    content=f"""## Reference Materials Uploaded
+
+The team will use these materials as inspiration and reference:
+
+{summary}
+"""
+                ).send()
+                
+                return True
+            
+        return False
+    except Exception as e:
+        print(f"Error handling file upload: {str(e)}")
+        await cl.Message(content=f"Error processing file upload: {str(e)}").send()
+        return False
+
 # Chainlit callbacks
 @cl.on_chat_start
 async def on_chat_start():
@@ -263,9 +339,10 @@ Welcome to your AI-powered creative team! This collaborative studio connects you
 
 ## How to Begin:
 1. **Start by selecting which team members you want to collaborate with**
-2. **Share your creative challenge or project idea**
-3. **The team will collaborate and provide a synthesized response**
-4. **Continue the conversation to refine and develop your creative project**
+2. **You can upload reference materials or templates**
+3. **Share your creative challenge or project idea**
+4. **The team will collaborate and provide a synthesized response**
+5. **Continue the conversation to refine and develop your creative project**
 
 Let's begin by setting up your creative team!
 """
@@ -277,7 +354,8 @@ Let's begin by setting up your creative team!
         "title": "New Creative Project",
         "description": "No description yet",
         "stage": "initiation",
-        "history": []
+        "history": [],
+        "reference_materials": []
     })
     
     # Ask user to select team members using the new element-based approach
@@ -291,13 +369,27 @@ Let's begin by setting up your creative team!
                 cl.Action(name=role, value=role, label=f"Add to team", payload={"role": role})
             ]
         ).send()
+    
+    # Add upload button for reference materials
+    await cl.Message(
+        content="📎 **Upload reference materials or templates** to help guide the creative process.",
+        actions=[
+            cl.Action(name="upload_file", value="upload", label="Upload Files", payload={"action": "upload"})
+        ]
+    ).send()
 
 @cl.action_callback("creative_director")
 @cl.action_callback("storyteller")
 @cl.action_callback("visual_designer")
 @cl.action_callback("critic")
 @cl.action_callback("implementer")
+@cl.action_callback("upload_file")
 async def on_action(action):
+    # Handle file upload action
+    if action.name == "upload_file":
+        await handle_file_upload()
+        return
+        
     # Handle selecting team members
     role = action.name
     if role in AGENT_ROLES:
@@ -318,7 +410,7 @@ async def on_action(action):
 
 {team_list}
 
-Now, please describe your creative project or challenge in detail. The more specific you are, the better the team can help you!
+You can upload reference materials or templates using the upload button below, or proceed directly to describing your creative project.
 """).send()
         else:
             await cl.Message(content="You haven't selected any team members yet. Please select at least one to continue.").send()
